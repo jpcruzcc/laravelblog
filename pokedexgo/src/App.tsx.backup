@@ -1,0 +1,466 @@
+import { useState, useEffect, useCallback, useMemo, memo } from 'react'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { LeagueSelector } from '@/components/ui/league-selector'
+import PokemonDetailPage from '@/components/PokemonDetailPage'
+import { PokemonService } from '@/services/pokemonService'
+import { getOptimalCPForLeague, preloadPopularPokemon } from '@/lib/pvpOptimized'
+import { usePokemonRankings } from '@/hooks/usePokemonRankings'
+import { useAppStore } from '@/stores/appStore'
+import type { Pokemon } from '@/types/pokemon'
+import { Search, Zap, Shield, Heart, TrendingUp, Plus } from 'lucide-react'
+
+// Memoizar o componente PokemonCard para melhor performance
+const PokemonCard = memo(({ poke, onViewDetails }: { poke: Pokemon; onViewDetails: (pokemon: Pokemon) => void }) => {
+  const { data: rankings, isLoading: rankingsLoading } = usePokemonRankings(poke.name);
+  const { defaultLeague } = useAppStore();
+  
+  // Calcular CP otimizado para a liga atual (memoizado)
+  const optimalCP = useMemo(() => {
+    return getOptimalCPForLeague(poke, defaultLeague);
+  }, [poke, defaultLeague]);
+  
+  const currentLeagueRanking = rankings?.find(r => r.league === defaultLeague);
+
+  const getTypeColor = (type: string) => {
+    return PokemonService.getTypeColor(type)
+  }
+
+  const getStatIcon = (statName: string) => {
+    switch (statName) {
+      case 'attack': return <Zap className="w-4 h-4" />
+      case 'defense': return <Shield className="w-4 h-4" />
+      case 'hp': return <Heart className="w-4 h-4" />
+      default: return null
+    }
+  }
+  
+  return (
+    <Card className="hover:shadow-lg transition-shadow cursor-pointer">
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-lg capitalize">{poke.name}</CardTitle>
+          <span className="text-sm text-muted-foreground">#{poke.id.toString().padStart(3, '0')}</span>
+        </div>
+        <div className="flex gap-2">
+          {poke.types.map((type) => (
+            <Badge 
+              key={type.type.name}
+              variant="secondary"
+              style={{ 
+                backgroundColor: getTypeColor(type.type.name),
+                color: 'white',
+                border: 'none'
+              }}
+            >
+              {type.type.name}
+            </Badge>
+          ))}
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-center justify-between mb-4">
+          <img 
+            src={poke.sprites.other['official-artwork'].front_default || poke.sprites.front_default}
+            alt={poke.name}
+            className="w-20 h-20 object-contain"
+          />
+          <div className="text-right">
+            <div className="text-sm text-muted-foreground">Optimal CP</div>
+            <div className="text-lg font-bold" title={`Calculated for ${poke.name} in ${defaultLeague} league`}>
+              {optimalCP.toLocaleString()}
+            </div>
+          </div>
+        </div>
+        
+        {/* PvP Ranking Preview */}
+        {!rankingsLoading && currentLeagueRanking && (
+          <div className="mb-4 p-3 bg-muted/50 rounded-lg">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="w-4 h-4" />
+                <span className="text-sm font-medium capitalize">{defaultLeague} League</span>
+              </div>
+              <Badge variant="outline">#{currentLeagueRanking.rank}</Badge>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {currentLeagueRanking.percentageOfMax}% performance • Rating: {currentLeagueRanking.rating}
+            </div>
+          </div>
+        )}
+        
+        {/* Stats Preview */}
+        <div className="space-y-2">
+          {poke.stats.slice(0, 3).map((stat) => (
+            <div key={stat.stat.name} className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2">
+                {getStatIcon(stat.stat.name)}
+                <span className="capitalize">{stat.stat.name}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-16 bg-muted rounded-full h-2">
+                  <div 
+                    className="bg-primary h-2 rounded-full" 
+                    style={{ width: `${(stat.base_stat / 255) * 100}%` }}
+                  ></div>
+                </div>
+                <span className="w-8 text-right">{stat.base_stat}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        
+        <Button 
+          className="w-full mt-4" 
+          variant="outline"
+          onClick={() => onViewDetails(poke)}
+        >
+          Ver Detalhes
+        </Button>
+      </CardContent>
+    </Card>
+  );
+});
+
+function App() {
+  const [pokemon, setPokemon] = useState<Pokemon[]>([])
+  const [allPokemonList, setAllPokemonList] = useState<{name: string, url: string}[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [filteredPokemon, setFilteredPokemon] = useState<Pokemon[]>([])
+  const [currentPage, setCurrentPage] = useState(1)
+  const [hasMore, setHasMore] = useState(true)
+  const [selectedPokemon, setSelectedPokemon] = useState<Pokemon | null>(null)
+  const { defaultLeague } = useAppStore()
+
+  const POKEMON_PER_PAGE = 12; // Reduzir para melhor performance inicial
+
+  useEffect(() => {
+    // Pré-carregar cache de Pokemon populares para melhor performance
+    preloadPopularPokemon();
+    loadInitialPokemon();
+  }, [])
+
+  const handleSearch = useCallback(async () => {
+    if (searchQuery.trim() === '') {
+      setFilteredPokemon(pokemon)
+      return
+    }
+
+    setSearchLoading(true)
+    
+    try {
+      // First, filter from already loaded Pokemon
+      const localResults = pokemon.filter(p => 
+        p.name.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+
+      // If we have local results, show them first
+      if (localResults.length > 0) {
+        setFilteredPokemon(localResults)
+        setSearchLoading(false)
+        return
+      }
+
+      // If no local results, search in the complete list
+      const matchingPokemonNames = allPokemonList
+        .filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()))
+        .slice(0, 12) // Limit to 12 results for performance
+
+      if (matchingPokemonNames.length === 0) {
+        setFilteredPokemon([])
+        setSearchLoading(false)
+        return
+      }
+
+      // Load the matching Pokemon that aren't already loaded
+      const alreadyLoadedNames = new Set(pokemon.map(p => p.name))
+      const pokemonToLoad = matchingPokemonNames.filter(p => 
+        !alreadyLoadedNames.has(p.name)
+      )
+
+      if (pokemonToLoad.length > 0) {
+        const searchResults = await Promise.all(
+          pokemonToLoad.map(p => PokemonService.getPokemonDetails(p.name))
+        )
+        
+        const validSearchResults = searchResults.filter(p => p !== null) as Pokemon[]
+        
+        // Add the new Pokemon to our main list
+        const updatedPokemon = [...pokemon, ...validSearchResults]
+        setPokemon(updatedPokemon)
+        
+        // Update filtered results with all matching Pokemon (local + newly loaded)
+        const allMatchingResults = updatedPokemon.filter(p => 
+          p.name.toLowerCase().includes(searchQuery.toLowerCase())
+        )
+        setFilteredPokemon(allMatchingResults)
+      } else {
+        // All matching Pokemon are already loaded
+        setFilteredPokemon(localResults)
+      }
+      
+    } catch (error) {
+      console.error('Error searching Pokemon:', error)
+      // Fallback to local search on error
+      const localResults = pokemon.filter(p => 
+        p.name.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+      setFilteredPokemon(localResults)
+    } finally {
+      setSearchLoading(false)
+    }
+  }, [searchQuery, pokemon, allPokemonList])
+
+  useEffect(() => {
+    handleSearch()
+  }, [handleSearch])
+
+  // Effect to reload when league changes
+  useEffect(() => {
+    // No need to reload data, just refresh the display
+    // The rankings will update automatically via the hooks
+  }, [defaultLeague])
+
+  const loadInitialPokemon = async () => {
+    try {
+      setLoading(true)
+      
+      // First, get the complete list of available Pokemon
+      const fullPokemonList = await PokemonService.getPokemonList(1010) // All Pokemon
+      setAllPokemonList(fullPokemonList)
+      
+      // Load first batch of detailed Pokemon data
+      const initialBatch = fullPokemonList.slice(0, POKEMON_PER_PAGE)
+      const pokemonDetails = await Promise.all(
+        initialBatch.map(p => PokemonService.getPokemonDetails(p.name))
+      )
+      
+      const validPokemon = pokemonDetails.filter(p => p !== null) as Pokemon[]
+      setPokemon(validPokemon)
+      setFilteredPokemon(validPokemon)
+      setCurrentPage(1)
+      setHasMore(fullPokemonList.length > POKEMON_PER_PAGE)
+      
+    } catch (error) {
+      console.error('Error loading Pokemon:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadMorePokemon = async () => {
+    if (loadingMore || !hasMore) return
+    
+    try {
+      setLoadingMore(true)
+      
+      const startIndex = currentPage * POKEMON_PER_PAGE
+      const endIndex = startIndex + POKEMON_PER_PAGE
+      const nextBatch = allPokemonList.slice(startIndex, endIndex)
+      
+      if (nextBatch.length === 0) {
+        setHasMore(false)
+        return
+      }
+      
+      const pokemonDetails = await Promise.all(
+        nextBatch.map(p => PokemonService.getPokemonDetails(p.name))
+      )
+      
+      const validPokemon = pokemonDetails.filter(p => p !== null) as Pokemon[]
+      const updatedPokemon = [...pokemon, ...validPokemon]
+      
+      setPokemon(updatedPokemon)
+      setFilteredPokemon(searchQuery ? 
+        updatedPokemon.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase())) : 
+        updatedPokemon
+      )
+      setCurrentPage(prev => prev + 1)
+      setHasMore(endIndex < allPokemonList.length)
+      
+    } catch (error) {
+      console.error('Error loading more Pokemon:', error)
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  const handleViewDetails = (pokemon: Pokemon) => {
+    setSelectedPokemon(pokemon)
+  }
+
+  const handleBackToList = () => {
+    setSelectedPokemon(null)
+  }
+
+  // If a Pokemon is selected, show its detail page
+  if (selectedPokemon) {
+    return (
+      <PokemonDetailPage 
+        pokemon={selectedPokemon} 
+        onBack={handleBackToList}
+      />
+    )
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-lg text-muted-foreground">Carregando Pokédex...</p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-background">
+      {/* Header */}
+      <header className="border-b bg-card shadow-sm">
+        <div className="container mx-auto px-4 py-6">
+          <div className="flex flex-col gap-6">
+            {/* Title and Search */}
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+              <div>
+                <h1 className="text-3xl font-bold text-foreground">PokéDex GO PvP</h1>
+                <p className="text-muted-foreground">Sistema completo de análise competitiva</p>
+              </div>
+              <div className="relative max-w-md">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
+                <Input
+                  placeholder="Buscar Pokémon..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-10 pr-10"
+                  disabled={searchLoading}
+                />
+                {searchLoading && (
+                  <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary"></div>
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            {/* League Selector */}
+            <LeagueSelector />
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="container mx-auto px-4 py-8">
+        {/* Stats Overview */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium">Pokémon Carregados</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{pokemon.length}</div>
+              <p className="text-xs text-muted-foreground">
+                de {allPokemonList.length} disponíveis
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium">Liga Ativa</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold capitalize">{defaultLeague} League</div>
+              <p className="text-xs text-muted-foreground">
+                CP máximo: {defaultLeague === 'great' ? '1500' : defaultLeague === 'ultra' ? '2500' : 'Sem limite'}
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium">Resultados</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{filteredPokemon.length}</div>
+              <p className="text-xs text-muted-foreground">
+                {searchQuery ? `para "${searchQuery}"` : 'exibindo'}
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium">Meta Atual</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">Temporada 19</div>
+              <p className="text-xs text-muted-foreground">Atualizado hoje</p>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Pokemon Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          {filteredPokemon.map((poke) => (
+            <PokemonCard 
+              key={poke.id} 
+              poke={poke} 
+              onViewDetails={handleViewDetails}
+            />
+          ))}
+        </div>
+
+        {/* Load More Button */}
+        {hasMore && !searchQuery && (
+          <div className="flex justify-center mt-8">
+            <Button 
+              onClick={loadMorePokemon}
+              disabled={loadingMore}
+              size="lg"
+              className="flex items-center gap-2"
+            >
+              {loadingMore ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-foreground"></div>
+                  Carregando...
+                </>
+              ) : (
+                <>
+                  <Plus className="w-4 h-4" />
+                  Carregar Mais Pokémon
+                </>
+              )}
+            </Button>
+          </div>
+        )}
+
+        {/* No Results Message */}
+        {filteredPokemon.length === 0 && searchQuery && !loading && (
+          <div className="text-center py-12">
+            <p className="text-lg text-muted-foreground">Nenhum Pokémon encontrado para "{searchQuery}"</p>
+            <Button 
+              onClick={() => setSearchQuery('')}
+              variant="outline"
+              className="mt-4"
+            >
+              Limpar busca
+            </Button>
+          </div>
+        )}
+
+        {/* Loading State for More Pokemon */}
+        {loadingMore && (
+          <div className="text-center py-8">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+            <p className="text-muted-foreground">Carregando mais Pokémon...</p>
+          </div>
+        )}
+      </main>
+    </div>
+  )
+}
+
+export default App
