@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+	:root {
+		--bg: 248 250 252;
+		--bg-soft: 241 245 249;
+		--fg: 15 23 42;
+		--muted: 100 116 139;
+		--card: 255 255 255;
+		--border: 203 213 225;
+		--accent: 244 244 245;
+	}
+
+	:root.dark {
+		--bg: 9 9 11;
+		--bg-soft: 24 24 27;
+		--fg: 244 244 245;
+		--muted: 161 161 170;
+		--card: 24 24 27;
+		--border: 63 63 70;
+		--accent: 39 39 42;
+	}
+
+	body {
+		@apply min-h-screen bg-[rgb(var(--bg))] text-[rgb(var(--fg))] antialiased;
+		font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+	}
+}
+
+@layer components {
+	.shell {
+		@apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8;
+	}
+
+	.surface-card {
+		@apply rounded-2xl border border-[rgb(var(--border))] bg-[rgb(var(--card))]/80 backdrop-blur;
+	}
+
+	.badge {
+		@apply inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium;
+	}
+}
+
+@layer utilities {
+	.atmo-grid {
+		background-image:
+			radial-gradient(circle at 15% 10%, rgba(255, 255, 255, 0.06), transparent 28%),
+			radial-gradient(circle at 80% 35%, rgba(148, 163, 184, 0.12), transparent 30%),
+			linear-gradient(to right, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+			linear-gradient(to bottom, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+		background-size: auto, auto, 42px 42px, 42px 42px;
+	}
+}
